@@ -1,17 +1,28 @@
 import streamlit as st
 import pandas as pd
-import os
 from datetime import datetime
 import time
+from streamlit_gsheets import GSheetsConnection
 
-# --- CONFIGURACIÓN Y SESIÓN ---
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Sistema Ventas Madera", layout="wide")
 
-# Inicializar el carrito en la memoria de la sesión si no existe
+# Estilo para botones (Opcional: mejora visual)
+st.markdown("""
+    <style>
+    .stButton>button { border-radius: 5px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- CONEXIÓN A GOOGLE SHEETS ---
+# Esta conexión busca las credenciales en los "Secrets" de Streamlit
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# --- INICIALIZACIÓN DE MEMORIA TEMPORAL ---
 if 'carrito' not in st.session_state:
     st.session_state.carrito = []
 
-# (Mantenemos el DICCIONARIO INVENTARIO igual al anterior)
+# --- INVENTARIO (Igual al original) ---
 INVENTARIO = {
     "MADERA PINO BRUTA": {
         '1 X 2" X 3,2 MTS': 1575, '1 X 3" X 3,2 MTS': 1800, '1 X 4" X 3,2 MTS': 2888,
@@ -44,55 +55,51 @@ INVENTARIO = {
     }
 }
 
-# --- FUNCIONES DE ARCHIVO ---
-def get_file_name():
+# --- FUNCIONES DE BASE DE DATOS ---
+def cargar_ventas_totales():
+    try:
+        # Lee la hoja de Google Sheets
+        return conn.read(ttl=0)
+    except:
+        return pd.DataFrame(columns=["Fecha", "Categoria", "Medida", "Precio_Unit", "Cantidad", "Total"])
+
+def finalizar_venta_gsheets(carrito_items):
+    df_historial = cargar_ventas_totales()
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
-    return f"ventas_{fecha_hoy}.csv"
-
-def cargar_ventas_dia():
-    nombre_archivo = get_file_name()
-    if os.path.exists(nombre_archivo):
-        df = pd.read_csv(nombre_archivo, sep=";")
-        return df[df['Categoria'] != "--- TOTAL GENERAL ---"]
-    return pd.DataFrame(columns=["Categoria", "Medida", "Precio_Unit", "Cantidad_Total", "Venta_Total"])
-
-def procesar_finalizar_venta():
-    nombre_archivo = get_file_name()
-    df_historial = cargar_ventas_dia()
     
-    # Crear DF del carrito actual
-    df_carrito = pd.DataFrame(st.session_state.carrito)
+    # Preparar datos del carrito para anexar
+    nuevos_datos = []
+    for item in carrito_items:
+        nuevos_datos.append({
+            "Fecha": fecha_hoy,
+            "Categoria": item["Categoria"],
+            "Medida": item["Medida"],
+            "Precio_Unit": item["Precio_Unit"],
+            "Cantidad": item["Cantidad"],
+            "Total": item["Total"]
+        })
     
-    # Unir carrito con historial
-    for _, item in df_carrito.iterrows():
-        filtro = (df_historial['Categoria'] == item['Categoria']) & (df_historial['Medida'] == item['Medida'])
-        if not df_historial[filtro].empty:
-            df_historial.loc[filtro, 'Cantidad_Total'] += item['Cantidad_Total']
-            df_historial.loc[filtro, 'Venta_Total'] = df_historial.loc[filtro, 'Cantidad_Total'] * item['Precio_Unit']
-        else:
-            df_historial = pd.concat([df_historial, pd.DataFrame([item])], ignore_index=True)
+    df_nuevos = pd.DataFrame(nuevos_datos)
+    df_actualizado = pd.concat([df_historial, df_nuevos], ignore_index=True)
     
-    # Calcular gran total y guardar
-    gran_total = df_historial['Venta_Total'].sum()
-    fila_total = pd.DataFrame([{"Categoria": "--- TOTAL GENERAL ---", "Medida": "---", 
-                                "Precio_Unit": 0, "Cantidad_Total": 0, "Venta_Total": gran_total}])
-    
-    df_final = pd.concat([df_historial, fila_total], ignore_index=True)
-    df_final.to_csv(nombre_archivo, index=False, sep=";", encoding='utf-8-sig')
-    
-    # Limpiar carrito
+    # Guardar de vuelta en Google Sheets
+    conn.update(data=df_actualizado)
     st.session_state.carrito = []
 
-# --- INTERFAZ ---
-st.title("🌲 Venta de Maderas - Punto de Venta")
+# --- INTERFAZ DE USUARIO ---
+st.title("🌲 Punto de Venta Madera (Cloud Sync)")
 
-# Métrica de ventas acumuladas en el día
-df_dia = cargar_ventas_dia()
-st.metric("TOTAL VENTAS DEL DÍA (CAJA)", f"${df_dia['Venta_Total'].sum():,.0f}".replace(",", "."))
+# 1. Mostrar Ventas del Día
+df_todo = cargar_ventas_totales()
+fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+df_hoy = df_todo[df_todo['Fecha'] == fecha_hoy] if not df_todo.empty else pd.DataFrame()
+
+total_dia = df_hoy['Total'].sum() if not df_hoy.empty else 0
+st.metric("VENTAS TOTALES DEL DÍA (EN NUBE)", f"${total_dia:,.0f}".replace(",", "."))
 
 st.divider()
 
-# Columna Izquierda: Selección / Columna Derecha: Carrito Actual
+# 2. Área de Trabajo (Carrito y Selección)
 col_input, col_cart = st.columns([1, 1.2])
 
 with col_input:
@@ -100,42 +107,37 @@ with col_input:
     cat = st.selectbox("Categoría", list(INVENTARIO.keys()))
     med = st.selectbox("Medida", list(INVENTARIO[cat].keys()))
     can = st.number_input("Cantidad", min_value=1, value=1)
-    precio = INVENTARIO[cat][med]
     
     if st.button("Añadir al Carrito 🛒", use_container_width=True):
-        nuevo_item = {
+        precio = INVENTARIO[cat][med]
+        st.session_state.carrito.append({
             "Categoria": cat,
             "Medida": med,
             "Precio_Unit": precio,
-            "Cantidad_Total": can,
-            "Venta_Total": precio * can
-        }
-        st.session_state.carrito.append(nuevo_item)
-        st.toast(f"Agregado: {med}", icon="➕")
+            "Cantidad": can,
+            "Total": precio * can
+        })
+        st.toast(f"Añadido: {med}", icon="➕")
 
 with col_cart:
     st.subheader("Carrito Actual")
     if st.session_state.carrito:
         df_temp = pd.DataFrame(st.session_state.carrito)
-        st.table(df_temp[['Medida', 'Cantidad_Total', 'Venta_Total']])
+        st.table(df_temp[['Medida', 'Cantidad', 'Total']])
         
-        total_carrito = df_temp['Venta_Total'].sum()
-        st.markdown(f"### Total Carrito: **${total_carrito:,.0f}**")
+        monto_carrito = df_temp['Total'].sum()
+        st.markdown(f"### Total Carrito: **${monto_carrito:,.0f}**")
         
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-           if st.button("CANCELAR", type="secondary", use_container_width=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("CANCELAR", use_container_width=True):
                 st.session_state.carrito = []
                 st.rerun()
-        with col_btn2:
+        with c2:
             if st.button("TERMINAR VENTA ✅", type="primary", use_container_width=True):
-                procesar_finalizar_venta()
-                st.success("Venta guardada en caja correctamente")
+                finalizar_venta_gsheets(st.session_state.carrito)
+                st.success("Venta sincronizada con Google Sheets")
                 time.sleep(1)
                 st.rerun()
     else:
         st.info("El carrito está vacío")
-
-st.divider()
-st.subheader("Historial de Ventas del Día (CSV)")
-st.dataframe(df_dia, use_container_width=True)
