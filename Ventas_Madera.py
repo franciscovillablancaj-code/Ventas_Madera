@@ -124,7 +124,7 @@ with col_cart:
         
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
-            if st.button("CANCELAR", color="red", use_container_width=True):
+           if st.button("CANCELAR", type="secondary", use_container_width=True):
                 st.session_state.carrito = []
                 st.rerun()
         with col_btn2:
