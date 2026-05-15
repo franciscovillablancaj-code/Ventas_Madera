@@ -2,11 +2,16 @@ import streamlit as st
 import pandas as pd
 import os
 from datetime import datetime
+import time
 
-# Configuración de la página
-st.set_page_config(page_title="Sistema de Ventas Madera", layout="wide")
+# --- CONFIGURACIÓN Y SESIÓN ---
+st.set_page_config(page_title="Sistema Ventas Madera", layout="wide")
 
-# Inventario (Igual al original)
+# Inicializar el carrito en la memoria de la sesión si no existe
+if 'carrito' not in st.session_state:
+    st.session_state.carrito = []
+
+# (Mantenemos el DICCIONARIO INVENTARIO igual al anterior)
 INVENTARIO = {
     "MADERA PINO BRUTA": {
         '1 X 2" X 3,2 MTS': 1575, '1 X 3" X 3,2 MTS': 1800, '1 X 4" X 3,2 MTS': 2888,
@@ -39,87 +44,98 @@ INVENTARIO = {
     }
 }
 
+# --- FUNCIONES DE ARCHIVO ---
 def get_file_name():
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
     return f"ventas_{fecha_hoy}.csv"
 
-def cargar_datos():
+def cargar_ventas_dia():
     nombre_archivo = get_file_name()
     if os.path.exists(nombre_archivo):
         df = pd.read_csv(nombre_archivo, sep=";")
         return df[df['Categoria'] != "--- TOTAL GENERAL ---"]
     return pd.DataFrame(columns=["Categoria", "Medida", "Precio_Unit", "Cantidad_Total", "Venta_Total"])
 
-def guardar_venta(categoria, medida, cant, precio):
+def procesar_finalizar_venta():
     nombre_archivo = get_file_name()
-    df = cargar_datos()
+    df_historial = cargar_ventas_dia()
     
-    monto_actual = cant * precio
+    # Crear DF del carrito actual
+    df_carrito = pd.DataFrame(st.session_state.carrito)
     
-    filtro = (df['Categoria'] == categoria) & (df['Medida'] == medida)
-    if not df[filtro].empty:
-        df.loc[filtro, 'Cantidad_Total'] += cant
-        df.loc[filtro, 'Venta_Total'] = df.loc[filtro, 'Cantidad_Total'] * precio
-    else:
-        nueva = pd.DataFrame([{"Categoria": categoria, "Medida": medida, "Precio_Unit": precio, 
-                               "Cantidad_Total": cant, "Venta_Total": monto_actual}])
-        df = pd.concat([df, nueva], ignore_index=True)
+    # Unir carrito con historial
+    for _, item in df_carrito.iterrows():
+        filtro = (df_historial['Categoria'] == item['Categoria']) & (df_historial['Medida'] == item['Medida'])
+        if not df_historial[filtro].empty:
+            df_historial.loc[filtro, 'Cantidad_Total'] += item['Cantidad_Total']
+            df_historial.loc[filtro, 'Venta_Total'] = df_historial.loc[filtro, 'Cantidad_Total'] * item['Precio_Unit']
+        else:
+            df_historial = pd.concat([df_historial, pd.DataFrame([item])], ignore_index=True)
     
-    # Recalcular Gran Total
-    gran_total_dia = df['Venta_Total'].sum()
+    # Calcular gran total y guardar
+    gran_total = df_historial['Venta_Total'].sum()
     fila_total = pd.DataFrame([{"Categoria": "--- TOTAL GENERAL ---", "Medida": "---", 
-                                "Precio_Unit": 0, "Cantidad_Total": 0, "Venta_Total": gran_total_dia}])
+                                "Precio_Unit": 0, "Cantidad_Total": 0, "Venta_Total": gran_total}])
     
-    df_final = pd.concat([df, fila_total], ignore_index=True)
+    df_final = pd.concat([df_historial, fila_total], ignore_index=True)
     df_final.to_csv(nombre_archivo, index=False, sep=";", encoding='utf-8-sig')
+    
+    # Limpiar carrito
+    st.session_state.carrito = []
 
-# --- INTERFAZ STREAMLIT ---
-st.title("🌲 Sistema de Ventas - Control Diario")
+# --- INTERFAZ ---
+st.title("🌲 Venta de Maderas - Punto de Venta")
 
-# Cargar datos actuales
-df_ventas = cargar_datos()
-total_dia = df_ventas['Venta_Total'].sum()
-
-# Label de ventas del día (Métrica destacada)
-st.metric(label="VENTAS TOTALES DEL DÍA", value=f"${total_dia:,.0f}".replace(",", "."))
+# Métrica de ventas acumuladas en el día
+df_dia = cargar_ventas_dia()
+st.metric("TOTAL VENTAS DEL DÍA (CAJA)", f"${df_dia['Venta_Total'].sum():,.0f}".replace(",", "."))
 
 st.divider()
 
-# Formulario de entrada
-col1, col2, col3 = st.columns([2, 2, 1])
+# Columna Izquierda: Selección / Columna Derecha: Carrito Actual
+col_input, col_cart = st.columns([1, 1.2])
 
-with col1:
-    grupo = st.selectbox("Categoría", list(INVENTARIO.keys()))
-with col2:
-    medida = st.selectbox("Medida", list(INVENTARIO[grupo].keys()))
-with col3:
-    cantidad = st.number_input("Cantidad", min_value=1, step=1, value=1)
+with col_input:
+    st.subheader("Agregar Producto")
+    cat = st.selectbox("Categoría", list(INVENTARIO.keys()))
+    med = st.selectbox("Medida", list(INVENTARIO[cat].keys()))
+    can = st.number_input("Cantidad", min_value=1, value=1)
+    precio = INVENTARIO[cat][med]
+    
+    if st.button("Añadir al Carrito 🛒", use_container_width=True):
+        nuevo_item = {
+            "Categoria": cat,
+            "Medida": med,
+            "Precio_Unit": precio,
+            "Cantidad_Total": can,
+            "Venta_Total": precio * can
+        }
+        st.session_state.carrito.append(nuevo_item)
+        st.toast(f"Agregado: {med}", icon="➕")
 
-if st.button("REGISTRAR VENTA", use_container_width=True, type="primary"):
-    precio_unit = INVENTARIO[grupo][medida]
-    monto_operacion = cantidad * precio_unit
-    
-    # Guardar en el CSV
-    guardar_venta(grupo, medida, cantidad, precio_unit)
-    
-    # 1. Mensaje flotante en la esquina (Toast)
-    st.toast(f'✅ Venta registrada: ${monto_operacion:,.0f}', icon='💰')
-    
-    # 2. Mensaje de confirmación en el cuerpo de la página
-    st.success(f"Operación exitosa: Se han vendido {cantidad} unidades de {medida} por un total de ${monto_operacion:,.0f}")
-    
-    # Esperar un momento antes de recargar para que el usuario vea el mensaje
-    import time
-    time.sleep(4)
-    st.rerun()
+with col_cart:
+    st.subheader("Carrito Actual")
+    if st.session_state.carrito:
+        df_temp = pd.DataFrame(st.session_state.carrito)
+        st.table(df_temp[['Medida', 'Cantidad_Total', 'Venta_Total']])
+        
+        total_carrito = df_temp['Venta_Total'].sum()
+        st.markdown(f"### Total Carrito: **${total_carrito:,.0f}**")
+        
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("CANCELAR", color="red", use_container_width=True):
+                st.session_state.carrito = []
+                st.rerun()
+        with col_btn2:
+            if st.button("TERMINAR VENTA ✅", type="primary", use_container_width=True):
+                procesar_finalizar_venta()
+                st.success("Venta guardada en caja correctamente")
+                time.sleep(1)
+                st.rerun()
+    else:
+        st.info("El carrito está vacío")
 
-# Mostrar Tabla de ventas
-st.subheader("Resumen de ventas de hoy")
-if not df_ventas.empty:
-    # Formatear para visualización
-    df_mostrar = df_ventas.copy()
-    df_mostrar['Precio_Unit'] = df_mostrar['Precio_Unit'].map('${:,.0f}'.format)
-    df_mostrar['Venta_Total'] = df_mostrar['Venta_Total'].map('${:,.0f}'.format)
-    st.table(df_mostrar)
-else:
-    st.info("Aún no hay ventas registradas hoy.")
+st.divider()
+st.subheader("Historial de Ventas del Día (CSV)")
+st.dataframe(df_dia, use_container_width=True)
