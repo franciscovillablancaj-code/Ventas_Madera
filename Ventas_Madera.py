@@ -110,7 +110,7 @@ if st.button("REGISTRAR VENTA", use_container_width=True, type="primary"):
     
     # Esperar un momento antes de recargar para que el usuario vea el mensaje
     import time
-    time.sleep(1.5)
+    time.sleep(4)
     st.rerun()
 
 # Mostrar Tabla de ventas
