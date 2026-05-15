@@ -97,9 +97,21 @@ with col3:
 
 if st.button("REGISTRAR VENTA", use_container_width=True, type="primary"):
     precio_unit = INVENTARIO[grupo][medida]
+    monto_operacion = cantidad * precio_unit
+    
+    # Guardar en el CSV
     guardar_venta(grupo, medida, cantidad, precio_unit)
-    st.success(f"Venta registrada: ${cantidad * precio_unit:,.0f}")
-    st.rerun() # Recarga la app para actualizar la tabla y el total
+    
+    # 1. Mensaje flotante en la esquina (Toast)
+    st.toast(f'✅ Venta registrada: ${monto_operacion:,.0f}', icon='💰')
+    
+    # 2. Mensaje de confirmación en el cuerpo de la página
+    st.success(f"Operación exitosa: Se han vendido {cantidad} unidades de {medida} por un total de ${monto_operacion:,.0f}")
+    
+    # Esperar un momento antes de recargar para que el usuario vea el mensaje
+    import time
+    time.sleep(1.5)
+    st.rerun()
 
 # Mostrar Tabla de ventas
 st.subheader("Resumen de ventas de hoy")
